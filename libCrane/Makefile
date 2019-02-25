@@ -4,7 +4,7 @@ MYPWD_DIR=$(shell pwd)
 CXX ?= g++
 override CXXFLAGS += -fPIC -I$(MYPWD_DIR)/third_party/include -L$(MYPWD_DIR)/third_party/bin
 
-${BIN_DIR}/libCrane.so: hooks.o inline_hook
+${BIN_DIR}/libCrane.so: inline_hook hooks.o 
 	$(CXX) -fPIC $(CXXFLAGS) -shared -o ${BIN_DIR}/libCrane.so  -Wl,--start-group hooks.o $(LIBS) -lPFishHook -ldl -Wl,--end-group 
 
 inline_hook: directories

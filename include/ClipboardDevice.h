@@ -6,6 +6,7 @@ enum ClipboardCmd
 	CB_GET,
 	CB_SET,
 	CB_SIZE,
+	CB_TRUNC,
 };
 
 #pragma pack(push)

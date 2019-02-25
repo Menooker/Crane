@@ -29,12 +29,13 @@ struct CraneFile;
 struct DeviceInfo
 {
 	int idx;
-	int (*open)(CraneFile* fd, char* path);
+	int (*open)(CraneFile* fd, char* path, int flags, mode_t mode);
 	ssize_t(*read) (CraneFile* fd, char* buf, size_t size);
 	ssize_t(*write) (CraneFile* fd, char* buf, size_t size);
 	void(*close)(CraneFile* fd);
 	loff_t(*llseek) (CraneFile* fd, loff_t offset, int whence);
 	size_t(*get_size)(CraneFile* fd);
+	int (*truncate)(loff_t off);
 };
 
 struct CraneFile
@@ -64,6 +65,8 @@ def_name(read, ssize_t, int, char*, size_t);
 def_name(write, ssize_t, int, char*, size_t);
 def_name(lseek64, loff_t, int, loff_t, int);
 def_name(dup2, int, int, int);
+def_name(ftruncate64, int, int, loff_t);
+def_name(truncate64, int, char*, loff_t);
 
 struct CraneContext
 {
@@ -80,6 +83,45 @@ static CraneContext& GetCraneContext()
 #define fd2file (GetCraneContext()._fd2file)
 #define name2dev (GetCraneContext()._name2dev)
 
+
+static int CraneTruncate64(char* path, loff_t off)
+{
+	char p[PATH_MAX];
+	int ret = CallOld<Name_truncate64>(path, off);
+	if (ret == -1)
+		return ret;
+	auto itr = name2dev.find(realpath(path, p));
+	if (itr != name2dev.end())
+	{
+		if (!itr->second->truncate)
+		{
+			errno = EINVAL;
+			return -1;
+		}
+		itr->second->truncate(off);
+	}
+	return ret;
+}
+
+static int CraneFTruncate64(int fd, loff_t off)
+{
+	int ret = CallOld<Name_ftruncate64>(fd, off);
+	if (ret == -1)
+		return ret;
+	auto itr = fd2file.find(fd);
+	if (itr != fd2file.end())
+	{
+		if (!itr->second->vtable->truncate)
+		{
+			errno = EINVAL;
+			return -1;
+		}
+		return itr->second->vtable->truncate(off);
+	}
+	return ret;
+}
+
+
 static int CraneOpen(char* path, int flags, mode_t mode)
 {
 	char p[PATH_MAX];
@@ -90,7 +132,7 @@ static int CraneOpen(char* path, int flags, mode_t mode)
 	if (itr != name2dev.end())
 	{
 		CraneFile* pfile = new CraneFile{ itr->second, /*fd*/ret, /*offset*/0};
-		if (pfile->vtable->open(pfile, path)==-1)
+		if (pfile->vtable->open(pfile, path, flags, mode)==-1)
 		{
 			delete pfile;
 			CallOld<Name_close>(ret);
@@ -302,7 +344,18 @@ void RecvFromWinServer(void* buf, size_t sz)
 
 static DeviceInfo clipboard_dev = {
 	.idx = 0,
-	.open = [](CraneFile*,char*) {return 0; },
+	.open = [](CraneFile* fd,char*, int flags, mode_t mode) {
+		if(flags & O_TRUNC)
+		{
+			win_server_fd = ConnectToServer(13578);
+			ClipboardRequest req {CB_TRUNC,0};
+			SendToWinServer(fd->vtable,&req,sizeof(req));
+			uint64_t ret_size;
+			RecvFromWinServer(&ret_size,sizeof(ret_size));
+			close(win_server_fd);			
+		}
+		return 0;
+	},
 	.read = [](CraneFile* fd, char* buf, size_t sz)->ssize_t {
 		win_server_fd = ConnectToServer(13578);
 		ClipboardRequest req {CB_GET,fd->offset,sz};
@@ -336,6 +389,14 @@ static DeviceInfo clipboard_dev = {
 		close(win_server_fd);
 		return ret_size;
 	},
+	.truncate = [](loff_t size) -> int {
+		win_server_fd = ConnectToServer(13578);
+		ClipboardRequest req {CB_TRUNC,size};
+		SendToWinServer(nullptr,&req,sizeof(req));
+		uint64_t ret_size;
+		RecvFromWinServer(&ret_size,sizeof(ret_size));
+		close(win_server_fd);	
+	}
 };
 
 
@@ -357,6 +418,8 @@ void HookMe()
 	DoHook<Name_write>(CraneWrite);
 	DoHook<Name_lseek64>(CraneLSeek);
 	DoHook<Name_dup2>(CraneDup2);
+	DoHook<Name_ftruncate64>(CraneFTruncate64);
+	DoHook<Name_truncate64>(CraneTruncate64);
 }
 __attribute__((constructor)) void CraneInit()
 {

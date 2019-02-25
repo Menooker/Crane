@@ -23,7 +23,7 @@
     <ProjectGuid>{2892891D-FACA-4A26-B280-0D6B75FCB00B}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>CraneWinServer</RootNamespace>
-    <WindowsTargetPlatformVersion>10.0.17134.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
