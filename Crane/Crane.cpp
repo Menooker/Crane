@@ -5,6 +5,8 @@
 #include <netinet/in.h> 
 #include <string.h> 
 #include "Crane.h"
+#include <CompilerHappy.h>
+#include <Devices.h>
 
 int main(int argc, char const *argv[])
 {
@@ -44,12 +46,18 @@ int main(int argc, char const *argv[])
 		perror("listen");
 		exit(EXIT_FAILURE);
 	}
-	if ((new_socket = accept(server_fd, (struct sockaddr *)&address,
-		(socklen_t*)&addrlen)) < 0)
+	for (;;)
 	{
-		perror("accept");
-		exit(EXIT_FAILURE);
+		if ((new_socket = accept(server_fd, (struct sockaddr *)&address,
+			(socklen_t*)&addrlen)) < 0)
+		{
+			perror("accept");
+			exit(EXIT_FAILURE);
+		}
+		RemoteRequest req;
+		valread = read(new_socket, &req, sizeof(req));
+		//process it
+		close(new_socket);
 	}
-	valread = read(new_socket, buffer, 1024);
 	return 0;
 }

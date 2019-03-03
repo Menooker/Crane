@@ -11,8 +11,9 @@ enum ClipboardCmd
 
 #pragma pack(push)
 #pragma pack(4)
-struct ClipboardRequest
+struct RemoteRequest
 {
+	uint32_t dev;
 	uint32_t cmd;
 	uint64_t param1;
 	uint64_t param2;

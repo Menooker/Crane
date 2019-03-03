@@ -16,19 +16,22 @@
 #include <asm-generic/errno.h>
 #include <assert.h>
 #include <string.h>
-#include "ClipboardDevice.h"
+#include "Devices.h"
 #include "HookFunction.h"
 #include <memory>
-
+#include <unistd.h>
+#include <dirent.h>
+#include <linux/limits.h>
+#include "CompilerHappy.h"
 using namespace Crane;
 
-//fix-me: add O_APPEND seek fix
-
 struct CraneFile;
+bool init_called = false;
+
 
 struct DeviceInfo
 {
-	int idx;
+	uint32_t idx;
 	int (*open)(CraneFile* fd, char* path, int flags, mode_t mode);
 	ssize_t(*read) (CraneFile* fd, char* buf, size_t size);
 	ssize_t(*write) (CraneFile* fd, char* buf, size_t size);
@@ -42,18 +45,9 @@ struct CraneFile
 {
 	DeviceInfo* vtable;
 	int fd;
+	//offset is SIZE_MAX if O_APPEND
 	size_t offset;
 };
-
-#pragma pack(push)
-#pragma pack(4)
-struct CraneRequest
-{
-	int dev_idx;
-	uint32_t additional_sz;
-	char data[0];
-};
-#pragma pack(pop)
 
 static int main_fd;
 static int linux_server_fd;
@@ -212,6 +206,15 @@ static int CraneDup2(int oldfd, int newfd)
 			fd2file.insert(std::make_pair(newfd, itr->second));
 		}
 	}
+	else
+	{
+		auto itr2 = fd2file.find(newfd);
+		if (itr2 != fd2file.end())
+		{
+			itr2->second->vtable->close(itr2->second.get());
+			fd2file.erase(itr2);
+		}
+	}
 	return ret;
 }
 
@@ -226,6 +229,7 @@ static loff_t CraneLSeek(int fd, loff_t offset, int whence)
 			errno = ESPIPE;
 			return -1;
 		}
+		CallOld<Name_lseek64>(fd, offset, whence);
 		return itr->second->vtable->llseek(itr->second.get(), offset, whence);
 	}
 	int ret = CallOld<Name_lseek64>(fd, offset, whence);
@@ -234,7 +238,12 @@ static loff_t CraneLSeek(int fd, loff_t offset, int whence)
 
 loff_t CraneDefaultLSeek(CraneFile* fd, loff_t offset, int whence)
 {
-	if (whence == SEEK_SET)
+	if (whence == SEEK_END || fd->offset == SIZE_MAX)
+	{
+		fd->offset = fd->vtable->get_size(fd) + offset;
+		return offset;
+	}
+	else if (whence == SEEK_SET)
 	{
 		fd->offset = offset;
 		return offset;
@@ -242,11 +251,6 @@ loff_t CraneDefaultLSeek(CraneFile* fd, loff_t offset, int whence)
 	else if (whence == SEEK_CUR)
 	{
 		fd->offset += offset;
-		return offset;
-	}
-	else if (whence == SEEK_END)
-	{
-		fd->offset = fd->vtable->get_size(fd) + offset;
 		return offset;
 	}
 	else
@@ -261,7 +265,15 @@ int CraneIsServer()
 	return main_fd != -1;
 }
 
-
+void PerrorSafe(const char* str)
+{
+	char* errstr = strerror(errno);
+	int cnt = snprintf(nullptr, 0, "%s: %s\n", str, errstr);
+	char* buf = new char[cnt+1];
+	snprintf(buf, cnt + 1, "%s: %s\n", str, errstr);
+	CallOld<Name_write>(2, buf, cnt);
+	delete[]buf;
+}
 
 
 static int ConnectToServer(int port)
@@ -283,52 +295,45 @@ static int ConnectToServer(int port)
 	// Convert IPv4 and IPv6 addresses from text to binary form 
 	if (inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr) <= 0)
 	{
-		perror("Address error");
+		PerrorSafe("Address error");
 		return -1;
 	}
 
 	if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
 	{
-		perror("Connection Failed");
+		PerrorSafe("Connection Failed");
 		return -1;
 	}
 	return sock;
 }
 
-static void SendToServer(int sockfd, DeviceInfo* dev, void* buf, size_t sz)
+static void SendToServer(int sockfd, void* buf, size_t sz)
 {
-	/*char buffer[64];
-	CraneRequest* req = (CraneRequest*)buffer;
-	req->idx=dev->idx;
-	req->additional_sz=sz;
-	assert(sz+sizeof(req)<64);
-	memcpy(req.data,buf,sz);*/
-	//if(send(sockfd, req, sizeof(req) + sz, 0) != sizeof(req) + sz)
 	if(CallOld<Name_write>(sockfd, (char*)buf, sz) != sz)
 	{
-		perror("Send error!");
+		PerrorSafe("Send error!");
 		assert(0);
 	}
 }
 
 static void RecvFromServer(int sockfd, void* buf, size_t sz)
 {
-	if(recv(sockfd, buf, sz, 0)!=sz)
+	if(CallOld<Name_read>(sockfd, (char*)buf, sz)!=sz)
 	{
-		perror("recv error!");
+		PerrorSafe("Recv error!");
 		assert(0);
 	}
 }
 
 
-void SendToLinuxServer(DeviceInfo* dev, void* buf, size_t sz)
+void SendToLinuxServer(void* buf, size_t sz)
 {
-	SendToServer(linux_server_fd,dev,buf,sz);
+	SendToServer(linux_server_fd,buf,sz);
 }
 
-void SendToWinServer(DeviceInfo* dev, void* buf, size_t sz)
+void SendToWinServer( void* buf, size_t sz)
 {
-	SendToServer(win_server_fd,dev,buf,sz);
+	SendToServer(win_server_fd,buf,sz);
 }
 
 void RecvFromLinuxServer(void* buf, size_t sz)
@@ -343,59 +348,66 @@ void RecvFromWinServer(void* buf, size_t sz)
 
 
 static DeviceInfo clipboard_dev = {
-	.idx = 0,
-	.open = [](CraneFile* fd,char*, int flags, mode_t mode) {
+	/*idx*/ 0,
+	/*open*/ [](CraneFile* fd,char*, int flags, mode_t mode) {
 		if(flags & O_TRUNC)
 		{
 			win_server_fd = ConnectToServer(13578);
-			ClipboardRequest req {CB_TRUNC,0};
-			SendToWinServer(fd->vtable,&req,sizeof(req));
+			RemoteRequest req {clipboard_dev.idx, CB_TRUNC,0};
+			SendToWinServer(&req,sizeof(req));
 			uint64_t ret_size;
 			RecvFromWinServer(&ret_size,sizeof(ret_size));
 			close(win_server_fd);			
 		}
+		if (flags & O_APPEND)
+		{
+			fd->offset = SIZE_MAX;
+		}
 		return 0;
 	},
-	.read = [](CraneFile* fd, char* buf, size_t sz)->ssize_t {
+	/*read*/ [](CraneFile* fd, char* buf, size_t sz)->ssize_t {
 		win_server_fd = ConnectToServer(13578);
-		ClipboardRequest req {CB_GET,fd->offset,sz};
-		SendToWinServer(fd->vtable,&req,sizeof(req));
+		RemoteRequest req { clipboard_dev.idx, CB_GET,fd->offset,sz};
+		SendToWinServer(&req,sizeof(req));
 		uint64_t ret_size;
 		RecvFromWinServer(&ret_size,sizeof(ret_size));
 		RecvFromWinServer(buf,ret_size);
-		fd->offset += ret_size;
+		if (fd->offset != SIZE_MAX)
+			fd->offset += ret_size;
 		close(win_server_fd);
 		return ret_size;
 	},
-	.write = [](CraneFile* fd, char* buf, size_t sz)->ssize_t {
+	/*write*/ [](CraneFile* fd, char* buf, size_t sz)->ssize_t {
 		win_server_fd = ConnectToServer(13578);
-		ClipboardRequest req {CB_SET,fd->offset,sz};
-		SendToWinServer(fd->vtable,&req,sizeof(req));
-		SendToWinServer(fd->vtable,buf, sz);
+		RemoteRequest req { clipboard_dev.idx, CB_SET,fd->offset,sz};
+		SendToWinServer(&req,sizeof(req));
+		SendToWinServer(buf, sz);
 		uint64_t ret_size;
 		RecvFromWinServer(&ret_size,sizeof(ret_size));
-		fd->offset += ret_size;
+		if(fd->offset!=SIZE_MAX)
+			fd->offset += ret_size;
 		close(win_server_fd);
 		return ret_size;
 	},
-	.close = CraneDefaultClose,
-	.llseek = CraneDefaultLSeek,
-	.get_size = [](CraneFile* fd) -> size_t{
+	/*close*/ CraneDefaultClose,
+	/*llseek*/ CraneDefaultLSeek,
+	/*get_size*/ [](CraneFile* fd) -> size_t{
 		win_server_fd = ConnectToServer(13578);
-		ClipboardRequest req {CB_SIZE};
-		SendToWinServer(fd->vtable,&req,sizeof(req));
+		RemoteRequest req { clipboard_dev.idx, CB_SIZE};
+		SendToWinServer(&req,sizeof(req));
 		uint64_t ret_size;
 		RecvFromWinServer(&ret_size,sizeof(ret_size));
 		close(win_server_fd);
 		return ret_size;
 	},
-	.truncate = [](loff_t size) -> int {
+	/*truncate*/ [](loff_t size) -> int {
 		win_server_fd = ConnectToServer(13578);
-		ClipboardRequest req {CB_TRUNC,size};
-		SendToWinServer(nullptr,&req,sizeof(req));
+		RemoteRequest req { clipboard_dev.idx, CB_TRUNC,size};
+		SendToWinServer(&req,sizeof(req));
 		uint64_t ret_size;
 		RecvFromWinServer(&ret_size,sizeof(ret_size));
-		close(win_server_fd);	
+		close(win_server_fd);
+		return ret_size;
 	}
 };
 
@@ -428,6 +440,41 @@ __attribute__((constructor)) void CraneInit()
 	{
 		HookMe();
 	}
+	DIR *dir;
+	struct dirent *ent;
+	char pathbuf[PATH_MAX];
+	char pathlinkbuf[PATH_MAX];
+	if ((dir = opendir("/proc/self/fd")) != NULL) {
+		/* print all the files and directories within directory */
+		while ((ent = readdir(dir)) != NULL) {
+			snprintf(pathlinkbuf, PATH_MAX, "/proc/self/fd/%s", ent->d_name);
+			if (readlink(pathlinkbuf, pathbuf, PATH_MAX)!=-1)
+			{
+				auto itr = name2dev.find(pathbuf);
+				if (itr != name2dev.end())
+				{
+					int fd = atoi(ent->d_name);
+					int flags = fcntl(fd, F_GETFL);
+					size_t off;
+					if (flags & O_APPEND)
+						off = SIZE_MAX;
+					else
+						off = CallOld<Name_lseek64>(fd, 0, SEEK_CUR);
+					CraneFile* pfile = new CraneFile{ itr->second, /*fd*/fd, /*offset*/ off };
+					fd2file.insert(std::make_pair(fd, std::shared_ptr< CraneFile>(pfile)));
+					//fprintf(stderr, "Found opened %d\n", fd);
+				}
+			}
+		}
+		closedir(dir);
+	}
+	else {
+		/* could not open directory */
+		PerrorSafe("cannot parse /proc/self/fd");
+		return;
+	}
+	//fprintf(stderr, "Init %d\n", getpid());
+	init_called = true;
 }
 
 __attribute__((destructor)) void CraneExit()
@@ -437,7 +484,7 @@ __attribute__((destructor)) void CraneExit()
 		close(main_fd);
 		if (remove("/home/menooker/crane"))
 		{
-			perror("deleting /home/menooker/crane failed. ");
+			PerrorSafe("deleting /home/menooker/crane failed. ");
 		}
 	}
 }
