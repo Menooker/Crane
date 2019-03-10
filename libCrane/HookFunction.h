@@ -58,14 +58,41 @@ namespace Crane
 	template <typename TName, typename TRet, typename... TTypes>
 	typename OldFuncWrapper<TName, TRet, TTypes...>::ptrFunc OldFuncWrapper<TName, TRet, TTypes...>::old_func = nullptr;
 
-	template <typename TName>
-	void DoHook(typename TName::func_wrapper::ptrFunc replacement_func)
+	inline void* GetFuncAddress(void* handle, const char* name)
+	{
+		void* pfun = dlsym(handle, name);
+		if (!pfun)
+		{
+			fputs(dlerror(), stderr);
+			exit(1);
+		}
+		return pfun;
+	}
+
+	inline void _DoHook(void* oldfunc, void** poutold, void* newfunc)
 	{
 		HookStatus ret;
-		if ((ret = HookIt(dlsym(RTLD_NEXT, TName::name), (void**)&TName::func_wrapper::old_func, (void*)replacement_func)) != 0)
+		if ((ret = HookIt(oldfunc,poutold,newfunc)) != FHSuccess)
 		{
 			fprintf(stderr, "Hook error %d\n", ret);
 			exit(1);
 		}
+	}
+	template <typename TName>
+	void DoHookInLibAndLibC(void* handle1, void* handle2, typename TName::func_wrapper::ptrFunc replacement_func)
+	{
+		void* libc = GetFuncAddress(handle1, TName::name);
+		_DoHook(libc, (void**)&TName::func_wrapper::old_func, (void*)replacement_func);
+		void* libother = GetFuncAddress(handle2, TName::name);
+		if (libother != libc)
+			_DoHook(libother, (void**)&TName::func_wrapper::old_func, (void*)replacement_func);
+		//else
+		//	fprintf(stderr, "Function address is the same %s\n", TName::name);
+	}
+
+	template <typename TName>
+	void DoHook(typename TName::func_wrapper::ptrFunc replacement_func)
+	{
+		_DoHook(GetFuncAddress(RTLD_NEXT, TName::name), (void**)&TName::func_wrapper::old_func, (void*)replacement_func);
 	}
 }

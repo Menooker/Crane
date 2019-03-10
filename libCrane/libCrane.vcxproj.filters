@@ -18,9 +18,33 @@
     <ClCompile Include="hooks.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="managing.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="Clipboard.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="CraneStatus.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="HookFunction.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\Crane.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\Devices.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\FDAlloc.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\SharedData.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="..\include\util.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>

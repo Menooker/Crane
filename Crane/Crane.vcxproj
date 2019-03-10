@@ -75,7 +75,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
-    <IncludePath>$(SolutionDir)include;;$(SolutionDir)..\linux_include;$(SolutionDir)..\linux_include\x86_64-linux-gnu</IncludePath>
+    <IncludePath>$(SolutionDir)include;$(SolutionDir)..\linux_include;$(SolutionDir)..\linux_include\x86_64-linux-gnu;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>

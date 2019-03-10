@@ -19,9 +19,17 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Clipboard.cpp" />
+    <ClCompile Include="CraneStatus.cpp" />
     <ClCompile Include="hooks.cpp" />
+    <ClCompile Include="managing.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\include\Crane.h" />
+    <ClInclude Include="..\include\Devices.h" />
+    <ClInclude Include="..\include\FDAlloc.h" />
+    <ClInclude Include="..\include\SharedData.h" />
+    <ClInclude Include="..\include\util.h" />
     <ClInclude Include="HookFunction.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">

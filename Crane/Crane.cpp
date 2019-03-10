@@ -7,6 +7,16 @@
 #include "Crane.h"
 #include <CompilerHappy.h>
 #include <Devices.h>
+#include <signal.h>
+#include <string>
+
+
+std::string status_str;
+
+void my_handler(int s) {
+	printf("Caught Ctrl-V, exiting\n");
+	exit(0);
+}
 
 int main(int argc, char const *argv[])
 {
@@ -16,6 +26,15 @@ int main(int argc, char const *argv[])
 		printf("A server is running or crane file is not deleted.\n");
 		exit(2);
 	}
+
+	struct sigaction sigIntHandler;
+
+	sigIntHandler.sa_handler = my_handler;
+	sigemptyset(&sigIntHandler.sa_mask);
+	sigIntHandler.sa_flags = 0;
+
+	sigaction(SIGINT, &sigIntHandler, NULL);
+
 	int server_fd, new_socket, valread;
 	struct sockaddr_in address;
 	int opt = 1;
