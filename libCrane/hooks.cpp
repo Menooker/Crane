@@ -30,7 +30,7 @@ using namespace Crane;
 
 bool init_called = false;
 
-
+//fix-me: impl dup & dup3 - close-on-exec flag may not correct
 
 static int linux_server_fd;
 static int win_server_fd;

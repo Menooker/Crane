@@ -84,8 +84,9 @@ namespace Crane
 		void* libc = GetFuncAddress(handle1, TName::name);
 		_DoHook(libc, (void**)&TName::func_wrapper::old_func, (void*)replacement_func);
 		void* libother = GetFuncAddress(handle2, TName::name);
+		void* dummy;
 		if (libother != libc)
-			_DoHook(libother, (void**)&TName::func_wrapper::old_func, (void*)replacement_func);
+			_DoHook(libother, (void**)&dummy, (void*)replacement_func);
 		//else
 		//	fprintf(stderr, "Function address is the same %s\n", TName::name);
 	}
