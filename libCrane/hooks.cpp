@@ -70,6 +70,11 @@ namespace Crane {
 	{
 		return CallOld<Name_write>(fd, (char*)buf, len);
 	}
+	extern int ConnectToLinuxServer();
+	extern void ServerGoodbye();
+	extern void ServerNotifyClose(int fd);
+	extern void ServerNotifyOpen(int fd, int idx);
+	extern int server_fd;
 }
 
 
@@ -130,8 +135,10 @@ static int CraneOpen(char* path, int flags, mode_t mode)
 	if (itr != name2dev.end())
 	{
 		FileSharedPtr pfile = CreateCraneFile(itr->second->idx, flags);
+		ServerNotifyOpen(ret, pshared_data->fd_allocator.GetIndex(pfile));
 		if (id2dev[pfile->device_idx]->open(pfile, path, flags, mode)==-1)
 		{
+			ServerNotifyClose(ret);
 			CallOld<Name_close>(ret);
 			errno = EACCES;
 			return -1;
@@ -146,6 +153,7 @@ static int CraneClose(int fd)
 	auto itr = fd2file.find(fd);
 	if (itr != fd2file.end())
 	{
+		ServerNotifyClose(fd);
 		id2dev[itr->second->device_idx]->close(itr->second);
 		fd2file.erase(itr);
 	}
@@ -201,6 +209,7 @@ static int CraneDup2(int oldfd, int newfd)
 		auto itr2 = fd2file.find(newfd);
 		if (itr2 != fd2file.end())
 		{
+			ServerNotifyClose(newfd);
 			id2dev[itr2->second->device_idx]->close(itr2->second);
 			itr2->second = itr->second;
 		}
@@ -214,6 +223,7 @@ static int CraneDup2(int oldfd, int newfd)
 		auto itr2 = fd2file.find(newfd);
 		if (itr2 != fd2file.end())
 		{
+			ServerNotifyClose(newfd);
 			id2dev[itr2->second->device_idx]->close(itr2->second);
 			fd2file.erase(itr2);
 		}
@@ -530,7 +540,7 @@ void CopyParentFd()
 			fputs("fd dump file is corrupted\n", stderr);
 			exit(1);
 		}
-		FileSharedPtr ptr = FileSharedPtr (&pshared_data->fd_allocator.fd_pool[fd_idx],0);
+		FileSharedPtr ptr = FileSharedPtr(&pshared_data->fd_allocator.fd_pool[fd_idx], 0);
 		if (ptr->flags & O_CLOEXEC)
 			id2dev[ptr->device_idx]->close(ptr);
 		else
@@ -542,11 +552,26 @@ void CopyParentFd()
 	
 }
 
+extern "C" int __register_atfork(void(*prepare) (void), void(*parent) (void), void(*child) (void), void *);
+
 __attribute__((constructor)) void CraneInit()
 {
 	main_fd = open("/home/menooker/crane", O_EXCL | O_CREAT | O_RDWR,  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 	if (main_fd == -1)
 	{
+		__register_atfork(nullptr, nullptr, []() {
+			if (server_fd != -1)
+			{
+				fprintf(stderr, "atfork\n");
+				CallOld<Name_close>(server_fd);
+				server_fd = -1;
+				for (auto& itm : fd2file)
+				{
+					itm.second->ref_count++; //we have forked the process. Add all fd ref-count by 1
+				}
+			}
+		}, nullptr);
+		ConnectToLinuxServer();
 		InitSharedMemorySpace(false);
 		InitDevicesLocal();
 		CopyParentFd();
@@ -576,6 +601,10 @@ __attribute__((destructor)) void CraneExit()
 		{
 			PerrorSafe("deleting /home/menooker/crane failed. ");
 		}
+	}
+	else
+	{
+		ServerGoodbye();
 	}
 	//CallOld<Name_write>(2, (char*)"Closing\n", 8);
 }

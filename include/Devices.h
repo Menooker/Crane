@@ -9,6 +9,14 @@ enum ClipboardCmd
 	CB_TRUNC,
 };
 
+enum FDCmd
+{
+	FDCMD_CLOSE,
+	FDCMD_OPEN,
+	FDCMD_BYE,
+	FDCMD_GETPARENT,
+};
+
 #pragma pack(push)
 #pragma pack(4)
 struct RemoteRequest
@@ -17,5 +25,10 @@ struct RemoteRequest
 	uint32_t cmd;
 	uint64_t param1;
 	uint64_t param2;
+};
+struct FDRequest
+{
+	uint32_t cmd;
+	int fd;
 };
 #pragma pack(pop)

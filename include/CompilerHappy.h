@@ -7,6 +7,8 @@
 #define EINVAL 123213
 #define EACCES 1
 #define INADDR_ANY ""
+#define EAGAIN 2321
+#define EWOULDBLOCK 22223
 struct sockaddr_in
 {
 	__SOCKADDR_COMMON(sin_);
@@ -19,7 +21,12 @@ struct sockaddr_in
 		sizeof(in_port_t) -
 		sizeof(struct in_addr)];
 };
-
+struct sockaddr_un
+{
+	int  sun_family;			/* Port number.  */
+	char sun_path[255];
+};
+#define AF_UNIX 1221321
 int htons(int);
 int inet_pton(int Family,const char* pszAddrString,void* pAddrBuf);
 #endif
