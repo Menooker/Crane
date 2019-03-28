@@ -26,6 +26,7 @@
 #include <SharedData.h>
 #include <vector>
 #include <util.h>
+#include <mutex>
 using namespace Crane;
 
 bool init_called = false;
@@ -74,9 +75,34 @@ namespace Crane {
 	extern void ServerGoodbye();
 	extern void ServerNotifyClose(int fd);
 	extern void ServerNotifyOpen(int fd, int idx);
+	extern void FdSendCheck(void* buf, size_t len);
 	extern int server_fd;
+	extern std::mutex server_fd_lock;
+
+	void ServerNotifyFork()
+	{
+		std::lock_guard<std::mutex> lg(server_fd_lock);
+		FDRequest req{ FDCMD_FORK , fd2file.size() };
+		int buf[2];
+		FdSendCheck(&req, sizeof(req));
+		for (auto& pair : fd2file)
+		{
+			buf[0] = pair.first;
+			buf[1] = pshared_data->fd_allocator.GetIndex(pair.second);
+			FdSendCheck(buf, sizeof(buf));
+		}
+	}
 }
 
+void CraneDerefFd(int fdidx)
+{
+	if (CraneIsServer())
+	{
+		assert(fdidx >= 0 && fdidx < FDALLOC_COUNT 
+			&& pshared_data->fd_allocator.fd_pool[fdidx].device_idx>=0);
+		FileSharedPtr ptr(&pshared_data->fd_allocator.fd_pool[fdidx], 0); //steal and release
+	}
+}
 
 static FileSharedPtr CreateCraneFile(int dev_idx,int flags)
 {
@@ -206,15 +232,18 @@ static int CraneDup2(int oldfd, int newfd)
 	auto itr = fd2file.find(oldfd);
 	if (itr != fd2file.end())
 	{
+		int fdidx = pshared_data->fd_allocator.GetIndex(itr->second);
 		auto itr2 = fd2file.find(newfd);
 		if (itr2 != fd2file.end())
 		{
 			ServerNotifyClose(newfd);
 			id2dev[itr2->second->device_idx]->close(itr2->second);
+			ServerNotifyOpen(newfd, fdidx);
 			itr2->second = itr->second;
 		}
 		else
 		{
+			ServerNotifyOpen(newfd, fdidx);
 			fd2file.insert(std::make_pair(newfd, itr->second));
 		}
 	}
@@ -289,6 +318,7 @@ int CraneExecve(const char *filename, char *const argv[], char *const envp[])
 	//first, dump all Crane file descriptors in current process
 	if (!fd2file.empty())
 	{
+		assert(server_fd >= 0);
 		char buffer[PATH_MAX];
 		snprintf(buffer, PATH_MAX, "/tmp/crane_process_%d", getpid());
 		int fd = CallOld<Name_open>(buffer, O_TRUNC | O_CREAT | O_RDWR, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
@@ -297,18 +327,18 @@ int CraneExecve(const char *filename, char *const argv[], char *const envp[])
 			PerrorSafe("Cannot create fd dump file");
 			exit(1);
 		}
-		for (auto& itm : fd2file)
-		{
-			CallOld<Name_write>(fd, (char*)&itm.first, sizeof(itm.first));
-			int fd_idx = pshared_data->fd_allocator.GetIndex(itm.second);
-			CallOld<Name_write>(fd, (char*)&fd_idx, sizeof(fd_idx));
-		}
+		CallOld<Name_write>(fd, (char*)&server_fd, sizeof(server_fd));
 		CallOld<Name_close>(fd);
 		int ret = CallOld<Name_execve>(filename, argv, envp);
 		if (ret == -1)
 		{
 			remove(buffer);
 		}
+	}
+	else
+	{
+		if (server_fd >= 0)
+			ServerGoodbye();
 	}
 	return CallOld<Name_execve>(filename, argv, envp);
 }
@@ -522,22 +552,38 @@ void CopyParentFd()
 	int fd = open(buffer, O_RDWR, 0);
 	if (fd == -1)
 		return;
-	for (;;)
+	//read the fd number
+	int bytes = read(fd, (char*)&server_fd, sizeof(server_fd));
+	if (bytes != sizeof(server_fd))
+	{
+		fputs("fd dump file is corrupted\n", stderr);
+		exit(1);
+	}
+
+	FDRequest req{ FDCMD_GETFD };
+	FdSendCheck(&req, sizeof(req));
+
+	int len;
+	bytes = recv(server_fd, &len, sizeof(len), 0);
+	if (bytes != sizeof(len))
+	{
+		fputs("error when communicating with fd server\n", stderr);
+		exit(1);
+	}
+	for (int i=0;i<len;i++)
 	{
 		int buf;
-		int bytes = read(fd, (char*)&buf, sizeof(buf));
-		if (bytes == 0)
-			break;
+		int bytes = recv(server_fd, (char*)&buf, sizeof(buf), 0);
 		if (bytes != sizeof(buf))
 		{
-			fputs("fd dump file is corrupted\n", stderr);
+			fputs("error when communicating with fd server\n", stderr);
 			exit(1);
 		}
 		int fd_idx;
-		bytes = read(fd, (char*)&fd_idx, sizeof(fd_idx));
+		bytes = recv(server_fd, (char*)&fd_idx, sizeof(fd_idx), 0);
 		if (bytes != sizeof(fd_idx) || fd_idx<0 || fd_idx>= FDALLOC_COUNT)
 		{
-			fputs("fd dump file is corrupted\n", stderr);
+			fputs("error when communicating with fd server\n", stderr);
 			exit(1);
 		}
 		FileSharedPtr ptr = FileSharedPtr(&pshared_data->fd_allocator.fd_pool[fd_idx], 0);
@@ -556,25 +602,35 @@ extern "C" int __register_atfork(void(*prepare) (void), void(*parent) (void), vo
 
 __attribute__((constructor)) void CraneInit()
 {
-	main_fd = open("/home/menooker/crane", O_EXCL | O_CREAT | O_RDWR,  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+	server_fd = -1;
+	main_fd = open("/home/menooker/crane", O_EXCL | O_CREAT | O_RDWR,  0666);
+	fchmod(main_fd, 0666);
 	if (main_fd == -1)
 	{
 		__register_atfork(nullptr, nullptr, []() {
 			if (server_fd != -1)
 			{
 				fprintf(stderr, "atfork\n");
-				CallOld<Name_close>(server_fd);
+				CallOld<Name_close>(server_fd);//close the inherited fd server socket
 				server_fd = -1;
+				
 				for (auto& itm : fd2file)
 				{
 					itm.second->ref_count++; //we have forked the process. Add all fd ref-count by 1
 				}
+				
+				if (fd2file.size()) //only connect to fd server when there are fd-s in the map
+				{
+					ConnectToLinuxServer();
+					ServerNotifyFork();
+				}
 			}
 		}, nullptr);
-		ConnectToLinuxServer();
 		InitSharedMemorySpace(false);
-		InitDevicesLocal();
 		CopyParentFd();
+		//we can defer connection to fd server until the first fd message
+		//ConnectToLinuxServer();
+		InitDevicesLocal();
 		HookMe();
 	}
 	else
@@ -585,6 +641,12 @@ __attribute__((constructor)) void CraneInit()
 			exit(1);
 		}
 		InitSharedMemorySpace(true);
+		int fd = open("/dev/clipboard", O_CREAT, 0666);
+		fchmod(fd, 0666);
+		close(fd);
+		fd = open("/dev/cranestatus", O_CREAT, 0666);
+		fchmod(fd, 0666);
+		close(fd);
 		CraneRegisterDeviceGlobal(nullptr,"RegisterClipboardLocal");
 		CraneRegisterDeviceGlobal(nullptr, "RegisterCraneStatusLocal");
 	}

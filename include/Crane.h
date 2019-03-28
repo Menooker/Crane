@@ -28,6 +28,7 @@ struct CraneFile
 extern "C"
 {
 	int CraneIsServer();
+	void CraneDerefFd(int fdidx);
 	void SendToLinuxServer(void* buf, size_t sz);
 	void SendToWinServer(void* buf, size_t sz);
 	void RecvFromLinuxServer(void* buf, size_t sz);

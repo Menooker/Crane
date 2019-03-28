@@ -17,6 +17,7 @@
 #include <sys/un.h>
 #include <linux/limits.h>
 #include <unordered_map>
+#include <sys/stat.h>
 
 std::string status_str;
 
@@ -31,7 +32,7 @@ struct Cleaner
 }_cleaner;
 
 void my_handler(int s) {
-	printf("Caught Ctrl-V, exiting\n");
+	fprintf(stderr, "Caught Ctrl-V, exiting\n");
 	exit(0);
 }
 
@@ -56,7 +57,7 @@ void PerrorDie(const char* p)
 
 void Die(const char* p)
 {
-	printf("%s\n", p);
+	fprintf(stderr, "%s\n", p);
 	exit(-1);
 }
 
@@ -88,7 +89,7 @@ bool OnRecv(int fd)
 		{
 		case FDCMD_CLOSE:
 		{
-			printf("close\n");
+			fprintf(stderr, "close %d\n", fd);
 			auto itr1 = process_fd_map.find(fd);
 			if (itr1 != process_fd_map.end())
 			{
@@ -99,17 +100,17 @@ bool OnRecv(int fd)
 				}
 				else
 				{
-					printf("Cannot find fd %d in process fd table (pid=%d)\n", data.fd, itr1->second.pid);
+					fprintf(stderr, "Cannot find fd %d in process fd table (pid=%d)\n", data.fd, itr1->second.pid);
 				}
 			}
 			else
 			{
-				printf("Cannot find socket fd %d in registered fd table\n", fd);
+				fprintf(stderr, "Cannot find socket fd %d in registered fd table\n", fd);
 			}
 			return true;
 		}
 		case FDCMD_OPEN:
-			printf("open\n");
+			fprintf(stderr, "open %d\n", fd);
 			int idx;
 			if (recv(fd, &idx, sizeof(idx), 0) == sizeof(idx))
 			{
@@ -120,14 +121,14 @@ bool OnRecv(int fd)
 				}
 				else
 				{
-					printf("Cannot find fd %d in registered fd table\n", fd);
+					fprintf(stderr, "Cannot find fd %d in registered fd table\n", fd);
 				}
 				return true;
 			}
 			break;
 		case FDCMD_BYE:
 		{
-			printf("Normal close\n");
+			fprintf(stderr, "Normal close %d\n", fd);
 			auto itr1 = process_fd_map.find(fd);
 			if (itr1 != process_fd_map.end())
 			{
@@ -136,13 +137,58 @@ bool OnRecv(int fd)
 			CloseAndUnregSocket(fd);
 			return false;
 		}
-		case FDCMD_GETPARENT:
+		case FDCMD_FORK:
 		{
-
+			fprintf(stderr, "ATFORK %d\n", fd);
+			auto& themap = process_fd_map[fd].fd_map;
+			int buf[2];
+			for (int i = 0; i < data.fd; i++)
+			{
+				recv(fd, buf, sizeof(buf), 0);
+				themap.insert(std::make_pair(buf[0], buf[1]));
+			}
+			return true;
+		}
+		case FDCMD_GETFD:
+		{
+			fprintf(stderr, "GETFD %d\n", fd);
+			int buf;
+			auto itr1 = process_fd_map.find(fd);
+			if (itr1 != process_fd_map.end())
+			{
+				auto& themap = itr1->second.fd_map;
+				buf = themap.size();
+				send(fd, &buf, sizeof(buf), 0);
+				for (auto& kv : themap)
+				{
+					buf = kv.first;
+					send(fd, &buf, sizeof(buf), 0);
+					buf = kv.second;
+					send(fd, &buf, sizeof(buf), 0);
+				}
+			}
+			else
+			{
+				fprintf(stderr, "Cannot find fd %d in registered fd table\n", fd);
+				buf = 0;
+				send(fd, &buf, sizeof(buf), 0);
+			}
+			return true;
 		}
 		}
 	}
 	perror("remote close");
+	auto itr1 = process_fd_map.find(fd);
+	if (itr1 != process_fd_map.end())
+	{
+		fprintf(stderr, "Finalizing process %d\n", itr1->second.pid);
+		for (auto& itr2 : itr1->second.fd_map)
+			CraneDerefFd(itr2.second);
+		process_fd_map.erase(itr1);
+		char buf[PATH_MAX];
+		snprintf(buf, PATH_MAX, "/tmp/crane_process_%d.sock", itr1->second.pid);
+		unlink(buf);
+	}
 	CloseAndUnregSocket(fd);
 	return false;
 
@@ -181,6 +227,8 @@ void UnixSocketThread()
 		exit(-1);
 	}
 
+	chmod(UNIX_SOCKET_PATH, 0666);
+
 	struct epoll_event accept_event;
 	accept_event.data.fd = listener_sockfd;
 	accept_event.events = EPOLLIN;
@@ -212,14 +260,27 @@ void UnixSocketThread()
 						// This can happen due to the nonblocking socket mode; in this
 						// case don't do anything, but print a notice (since these events
 						// are extremely rare and interesting to observe...)
-						printf("accept returned EAGAIN or EWOULDBLOCK\n");
+						fprintf(stderr, "accept returned EAGAIN or EWOULDBLOCK\n");
 					}
 					else {
 						PerrorDie("accept");
 					}
 				}
 				else {
-					printf("accept ok\n");
+					fprintf(stderr, "accept ok\n");
+
+					struct sockaddr_un client_sockaddr;
+					socklen_t len = sizeof(client_sockaddr);
+					int rc = getpeername(newsockfd, (struct sockaddr *) &client_sockaddr, &len);
+					if (rc == -1)
+						PerrorDie("GETPEERNAME ERROR");
+					int pid;
+					int result = sscanf(client_sockaddr.sun_path, "/tmp/crane_process_%d.sock", &pid);
+					if (result != 1)
+					{
+						Die((std::string("Bad process socket file: ") + client_sockaddr.sun_path).c_str());
+					}
+					fprintf(stderr, "process %d connected\n", pid);
 					//MakeSocketNonBlocking(newsockfd);
 					if (newsockfd >= MAXFDS) {
 						Die("socket fd  >= MAXFDS");
@@ -229,7 +290,7 @@ void UnixSocketThread()
 					event.data.fd = newsockfd;
 					event.events |= EPOLLIN;
 					ProcessFdTable table;
-					table.pid = 0;
+					table.pid = pid;
 					process_fd_map.insert(std::make_pair(newsockfd, std::move(table)));
 					if (epoll_ctl(epollfd, EPOLL_CTL_ADD, newsockfd, &event) < 0) {
 						PerrorDie("epoll_ctl EPOLL_CTL_ADD");
@@ -262,7 +323,7 @@ int main(int argc, char const *argv[])
 
 	if (!CraneIsServer())
 	{
-		printf("A server is running or crane file is not deleted.\n");
+		fprintf(stderr, "A server is running or crane file is not deleted.\n");
 		exit(2);
 	}
 

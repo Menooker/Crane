@@ -14,7 +14,8 @@ enum FDCmd
 	FDCMD_CLOSE,
 	FDCMD_OPEN,
 	FDCMD_BYE,
-	FDCMD_GETPARENT,
+	FDCMD_FORK,
+	FDCMD_GETFD,
 };
 
 #pragma pack(push)

@@ -18,6 +18,7 @@
 #include <linux/limits.h>
 #include <unistd.h>
 #include <Devices.h>
+#include <mutex>
 
 
 namespace Crane
@@ -113,17 +114,8 @@ namespace Crane
 #define UNIX_SOCKET_PATH "/home/menooker/crane.sock"
 
 	int server_fd = -1;
-	inline void SendCheck(int fd, void* buf, size_t len)
-	{
-		//assert(fd != -1);
-		if (fd == -1)
-		{
-			fprintf(stderr, "fd=1, pid=%d\n", getpid());
-			sleep(-1);
-		}
-		int ret = send(fd, buf, len, 0);
-		assert(ret == len);
-	}
+	std::mutex server_fd_lock;
+
 
 	//https://www.ibm.com/support/knowledgecenter/en/SSB23S_1.1.0.15/gtpc1/unixsock.html
 	int ConnectToLinuxServer()
@@ -136,7 +128,7 @@ namespace Crane
 		memset(&server_sockaddr, 0, sizeof(struct sockaddr_un));
 		memset(&client_sockaddr, 0, sizeof(struct sockaddr_un));
 
-		client_sock = socket(AF_UNIX, SOCK_STREAM | O_CLOEXEC, 0);
+		client_sock = socket(AF_UNIX, SOCK_STREAM, 0);
 		if (client_sock == -1) {
 			perror("SOCKET ERROR");
 			exit(1);
@@ -169,29 +161,49 @@ namespace Crane
 
 	}
 
+	inline void DoSendCheck(int fd, void* buf, size_t len)
+	{
+		int ret = send(fd, buf, len, 0);
+		assert(ret == len);
+	}
+
+	void FdSendCheck(void* buf, size_t len)
+	{
+		if (server_fd == -1)
+		{
+			ConnectToLinuxServer();
+		}
+		assert(server_fd > 0);
+		DoSendCheck(server_fd, buf, len);
+	}
+
 	void ServerNotifyOpen(int fd, int pos_in_arr)
 	{
+		std::lock_guard<std::mutex> lg(server_fd_lock);
 		FDRequest data{ FDCMD_OPEN, fd };
-		SendCheck(server_fd, &data, sizeof(data));
-		SendCheck(server_fd, &pos_in_arr, sizeof(pos_in_arr));
+		FdSendCheck(&data, sizeof(data));
+		FdSendCheck(&pos_in_arr, sizeof(pos_in_arr));
 	}
 
 	void ServerNotifyClose(int fd)
 	{
+		std::lock_guard<std::mutex> lg(server_fd_lock);
 		FDRequest data{ FDCMD_CLOSE, fd };
-		SendCheck(server_fd, &data, sizeof(data));
+		FdSendCheck(&data, sizeof(data));
 	}
 	void ServerGoodbye()
 	{
 		//fprintf(stderr, "bye%d\n", server_fd);
 		if (server_fd == -1)
 			return;
+		std::lock_guard<std::mutex> lg(server_fd_lock);
 		FDRequest data{FDCMD_BYE, 0};
-		SendCheck(server_fd, &data, sizeof(data));
+		FdSendCheck(&data, sizeof(data));
 		close(server_fd);
 		char buffer[PATH_MAX];
 		snprintf(buffer, sizeof(buffer), "/tmp/crane_process_%d.sock", getpid());
 		unlink(buffer);
+		server_fd = -1;
 	}
 
 }

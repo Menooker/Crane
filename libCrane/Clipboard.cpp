@@ -1,6 +1,7 @@
 #include <fcntl.h>
 #include <Crane.h>
 #include <Devices.h>
+#include <unistd.h>
 
 static DeviceInfo clipboard_dev = {
 	/*idx*/ 0,

@@ -4,6 +4,7 @@
 #include <string>
 #include <algorithm>
 #include <string.h>
+#include <unistd.h>
 
 static std::string status_str;
 
@@ -49,7 +50,10 @@ static DeviceInfo cranestatus_dev = {
 		fd->offset += ret_size;
 		return ret_size;
 	},
-	/*write*/ nullptr,
+	/*write*/ [](CraneFile* fd, char* buf, size_t sz)->ssize_t {
+		fd->offset += sz;
+		return sz;
+	},
 	/*close*/ CraneDefaultClose,
 	/*llseek*/ CraneDefaultLSeek,
 	/*get_size*/ [](CraneFile* fd) -> size_t {
